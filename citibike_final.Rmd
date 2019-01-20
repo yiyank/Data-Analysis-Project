@@ -1,0 +1,617 @@
+---
+title: "citiBike 1"
+author: "Lennart Rathje, Marius Goffart, Emily Cain, Connie Kang, and Hanna Casperson"
+date: "October 31, 2018"
+output: 
+  html_document:
+    code_folding: hide
+  
+---
+
+#Providing Consult to CitiBike: Analyzing 2016 Ride History Data
+
+##1.0 Understanding the data
+
+**Download all the monthly data and combine to create a 2016 year dataset. Explore the dataset to calculate descriptive statistics. Do exploratory visualization to better understand the dataset.**
+
+###1.1 Initialization and preparation
+
+####1.1.1 Gaining access to all necessary functions
+
+Before beginning to prepare and analyze the data, we run the following commands which are required in order to access many of the functions we utilize throughout this report.
+
+```{r echo=FALSE, results='hide',message=FALSE}
+library(dplyr)
+library(geosphere)
+library(ggplot2)
+library(lubridate)
+library(class)
+library(leaflet)
+library(gmodels)
+```
+
+####1.1.2 Reading and cleaning the existing data
+
+First, we import all the necessary monthly datasets and merge them into one complete dataframe consisting of all ride history data from January-September 2016.
+
+```{r}
+#Reading the monthly data
+bikes01 <- read.csv("201601-citibike-tripdata.csv")
+bikes02 <- read.csv("201602-citibike-tripdata.csv")
+bikes03 <- read.csv("201603-citibike-tripdata.csv")
+bikes04 <- read.csv("201604-citibike-tripdata.csv")
+bikes05 <- read.csv("201605-citibike-tripdata.csv")
+bikes06 <- read.csv("201606-citibike-tripdata.csv")
+bikes07 <- read.csv("201607-citibike-tripdata.csv")
+bikes08 <- read.csv("201608-citibike-tripdata.csv")
+bikes09 <- read.csv("201609-citibike-tripdata.csv")
+
+#Merging all the data from Jan 2016 to Sep 2016
+bikes <- rbind(bikes01, bikes02, bikes03, bikes04, bikes05, bikes06, bikes07, bikes08, bikes09)
+
+#First overview look at the data set
+str(bikes)
+```
+
+We then completed the necessary data cleaning:
+
+```{r}
+#Reclassifying certain variables
+bikes$start.station.id <- as.factor(bikes$start.station.id)
+bikes$end.station.id <- as.factor(bikes$end.station.id)
+bikes$bikeid <- as.factor(bikes$bikeid)
+bikes$gender <- as.factor(bikes$gender)
+
+#Specifying gender, where 0=unknown, 1=male, 2=female (https://www.citibikenyc.com/system-data)
+levels(bikes$gender) <- c("unknown", "male", "female")
+```
+
+Below, checking the results of the data cleaning confirms that all variables are of the correct type and that the dataset is now ready to use.
+
+```{r}
+str(bikes)
+```
+
+Overall, the initial complete dataset comprises approximately 10.26 million CitiBike trips, with 15 variables having been recorded for each observation.
+
+###1.2 Preliminary summarization of existing data
+
+```{r}
+summary(bikes)
+```
+
+From the above summary, we can compute certain descriptive summary statistics for many of the provided variables.
+
+For gender, we can see that the majority of the data entries are from male riders. Of the 10.26 million entries, `r round(6769032/(1306700+6769032+2186917)*100, digits=2)`% are from males, `r round(2186917/(1306700+6769032+2186917)*100, digits=2)`% are from females, and the remaining `r round(1306700/(1306700+6769032+2186917)*100, digits=2)`%
+are from individuals with unknown gender.
+
+For user type, we can calculate that the majority of the data (`r round(9026384/(9026384+1236265)*100, digits=2)`%) represents subscribers, with the remaining `r round(1236265/(9026384+1236265)*100, digits=2)`% representing regular customers (tourists or other non-regular riders).
+
+For trip duration, we can see that the range is anywhere from 61 to 6,707,533 seconds (1 minute to 77.63 days). The data is clearly very skewed left, as 75% of the duration data falls between 61 and 1095 seconds (1 to 18.25 minutes) and 50% falls between 61 and 643 seconds (1 to 10.72 minutes). Overall, the average (mean) trip duration is 988 seconds (16.47 minutes).
+
+For birth year, we can tell that there is some lefthand "noise," or data that we will want to exclude for later analyses, from the fact that the minimum birth year is 1885. Even if this observation accurately reflects a 131-year-old rider, it's likely we will want to omit such extreme outliers for future deeper analysis into relationships that may depend on rider age.
+
+Ignoring this noise, for now, shows that 25% of the birth year data falls from 1970-1980 (ages 36-46), another 25% falls from 1980-1987 (ages 29-36), and another 25% encompasses 1987-2000 (ages 16-29). Thus, the birth year
+variable shows that half of the observations, the middle 50%, are concentrated to the age range of 29-46.
+
+###1.3 Manipulation of and additions to the dataset
+
+####1.3.1 Sampling the data
+
+In order to reduce computing time for all further analyses, we create a smaller sample of the data which contains 20% of the complete data set. We then compare the statistical properties to confirm the necessary data similarity before proceeding.
+
+```{r}
+#Creating subset of data that contains 20% of original data
+bikes <- sample_frac(bikes, 0.20)
+
+#Checking statistical similarity
+str(bikes)
+summary(bikes)
+```
+
+The smaller sample of the data now represents `r round(1015237/(1015237+195905+328255)*100, digits=2)`% males, `r round(328255/(1015237+195905+328255)*100, digits=2)`% females, and `r round(195905/(1015237+195905+328255)*100, digits=2)`% unknown gender, which is very consistent with the statistical results found from the original data set in Section 1.2.
+
+The proportion of each user type also remained consistent, now with `r round(1354195/(185202+1354195)*100, digits=2)`% of the data set representing subscribers with the remaining `r round(185202/(185202+1354195)*100, digits=2)`% representing regular customers.
+
+The distribution of trip duration is also incredibly similar; the mean has only slightly decreased due to the maximum trip duration outlier significantly decreasing.
+
+Thus, the smaller subset of the entire data collection is sufficiently similar to the complete data set. Knowing the conclusions we draw will be essentially the same, we can confidently proceed with analyzing and visualizing this subset of data.
+
+####1.3.2 Adding and formatting additional variables
+
+It will be desirable to look at other variables which are not included in the existing data. Thus, before we begin with our data visualization, we add columns to explicitly analyze distance, speed, and age of rider(s).
+
+```{r}
+#Creating a distance variable and making sure that no distances greater than 20km are included (error in data, since NYC stations are no further than 20km away from each other)
+bikes$distance <- distHaversine(bikes[ ,c("start.station.longitude", "start.station.latitude")],bikes[ ,c("end.station.longitude", "end.station.latitude")])
+bikes$distance <- ifelse(bikes$distance > 20000, 20000, bikes$distance)
+
+#Creating a speed variable
+bikes$speed <- bikes$distance/bikes$tripduration
+
+#Creating an age variable instead of birth year
+bikes$age <- 2016 - bikes$birth.year
+bikes <- select(bikes, -(birth.year))
+```
+
+It's important to note that our distance variable gives the shortest possible straight-line ride between the two given points, and therefore the values are underestimates of the real distances actually traveled. This will cause our speed variables to be underestimates of the real, actual speeds.
+
+We then format and categorize the time variable(s) in order to streamline future exploration involving month, day, and/or time of day. For example, we assign times into four equally long "time of day" categories: morning (6am-12pm), afternoon (12pm-6pm), evening (6pm-12am), and night (12am-6am). We also create data that indicates whether each ride occurred on a weekday or a weekend.
+
+```{r}
+#Formatting the time variables
+bikes$starttime <- as.POSIXct(bikes$starttime,format = c("%m/ %d/ %Y %H: %M"))
+bikes$stoptime <- as.POSIXct(bikes$stoptime,format = c("%m/ %d/ %Y %H: %M"))
+
+#Creating variable which categorizes "time" into times of day
+bikes$time <- as.numeric(format(bikes$starttime, "%H%M"))
+bikes$daytime <- ifelse(bikes$time >=600 & bikes$time < 1200, "Morning", ifelse(bikes$time >=1200 & bikes$time < 1800, "Afternoon", ifelse(bikes$time >=1800 & bikes$time <2400, "Evening", "Night")))
+bikes$daytime <- as.factor(bikes$daytime)
+bikes <- select(bikes, -(time))
+
+#Creating a column "hour" and "month" to explore user statistics
+bikes$hour <- as.numeric(format(bikes$starttime, "%H"))
+bikes$month <- as.numeric(format(bikes$starttime, "%m"))
+bikes$month <- as.factor(bikes$month)
+levels(bikes$month) <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep")
+
+#Creating a seperate "date" column for yearly overview
+bikes$date <- as.Date(bikes$starttime)
+
+#Creating columns that indicate weekday or weekend
+bikes$weekday <- wday(bikes$starttime)
+bikes$weekday <- as.factor(bikes$weekday)
+levels(bikes$weekday) <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+bikes$weekend <- ifelse(bikes$weekday == "Sat" | bikes$weekday == "Sun", "Weekend", "Weekday")
+bikes$weekend <- as.factor(bikes$weekend)
+```
+
+####1.3.3 Checking the results of our manipulation
+
+```{r}
+str(bikes)
+summary(bikes)
+```
+
+It appears as though our dataframe manipulation was successful, and therefore we can proceed to exploratory visualization.
+
+###1.4 Exploratory visualization of the newly manipulated data
+
+####1.4.1 Visualizing the distribution of trip duration
+
+```{r}
+#Excluding the extreme outliers of trip duration
+bikest <- filter(bikes, tripduration < 3600)
+
+#Converting seconds to minutes
+bikest$tripduration <- bikest$tripduration/60
+
+#Plotting the duration histogram
+hist(bikest$tripduration, 30, main = "Distribution of Trip Duration", xlab = "Time (minutes)", probability = TRUE)
+```
+
+The above plot is a probability histogram showing that the distribution of trip durations is heavily skewed to the left, as discussed in Section 1.2. We can tell that the majority of trips last less than 10 minutes. By adding up the probabilities, we can estimate that the probability of any given ride lasting fewer than 10 minutes is approximately 23-24%.
+
+####1.4.2 Visualizing the distribution of age
+
+```{r}
+#Plotting the age histogram
+hist(bikes$age, main = "Distribution of Age", xlab = "Age", probability = TRUE)
+```
+
+The probability histogram of ages shows that the age data is skewed left such that the majority of the riders are between 20 and 40 years old. The asymmetric slope (very steep up to the peak, much more shallow decline from the peak) shows that it's significantly more probable for a rider to be above this age range than below it. By adding up the probabilities, we can estimate that the probability of any given rider's age falling from 20-40 is approximately 12-13%. The range can be further honed to estimate that the probability of any given rider's age being from 25-35 is about 8%.
+
+To explore future relationships with age, such as the relationship between age and traveling speed (see Section 2.3), we create a subset from `bikes` that excludes `r  nrow(bikes[is.na(bikes$age),])` observations that have no entry in the `age` column.
+
+```{r,message=FALSE}
+#Creating a subset which excludes empty age entries
+bikes_no.age.na <- subset(bikes, (is.na(bikes$age) == FALSE) )
+
+#Plotting age boxplot
+boxplot(bikes_no.age.na$age, main = "Age")
+```
+
+The boxplot shows that there are a significant number of outliers, which is not surprising considering the age/birth year problems we identified and briefly discussed in Section 1.2. We will further process the age data in two different ways:
+
+1. `r  nrow(bikes_no.age.na[bikes_no.age.na$age>90,])` observations with an `age` greater than 90 will be deleted.
+
+2. `r nrow(bikes_no.age.na[bikes_no.age.na$age<90 & bikes_no.age.na$age>74,])` observations with an `age` between 75 and 90 will be grouped together as `age` 75. For conveniece, we do not name it "75+" so that the program knows to handle an integer.
+
+```{r,message=FALSE}
+bikes_no.age.na <- subset(bikes_no.age.na, bikes_no.age.na$age < 90)
+bikes_no.age.na$age <- ifelse(bikes_no.age.na$age > 74, 75, bikes_no.age.na$age)
+```
+
+All in all, we deleted `r round((nrow(bikes)-nrow(bikes_no.age.na))/nrow(bikes)*100, digits =2)`% and manipulated another `r round(((nrow(bikes_no.age.na[bikes_no.age.na$age>90,])+nrow(bikes_no.age.na[bikes_no.age.na$age<90 & bikes_no.age.na$age>74,]))/nrow(bikes))*100, digits =2)`% of the original data in bikes.
+
+####1.4.3 Visualizing travel distances
+
+We first examine an overall distribution of all estimated trip distances.
+
+```{r}
+hist(bikes$distance, main = "Distribution of Trip Distance", xlab = "Distance (m)", probability = TRUE)
+```
+
+Similar to the previous probability histograms, we see that the distribution of trip distances is skewed left with some very-small-probability, extreme high-distance outliers.
+
+To understand how the average trip distance may be changing over the course of the year, we examine average distance as a function of the month.
+
+```{r}
+barplot(tapply(X = bikes$distance, INDEX = bikes$month, FUN = mean, na.rm =T), names.arg = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"), ylim = c(0, 2000), main = "Average Travel Distance per Month", ylab = "Distance (m)")
+```
+
+Though average distance over the course of the year appears to be relatively stable, there is still a noticeable increase in the average trip distance for spring, summer, and fall months over winter months. The average distance appears to be around 1600m in Jan and Feb, while the average distance jumps to around 1800m for Jun through Sep.
+
+##2.0 Identifying patterns in the data
+
+**Explain/illustrate these patterns using appropriate visualization.**
+
+###2.1 Examining traffic patterns
+
+To discover traffic patterns, we evaluate the number of rides per hour on both daily and monthly scales.
+
+```{r,message=FALSE}
+plot_uh <- ggplot(data = bikes, aes(x=hour, colour = daytime))
+plot_uh + geom_bar() + facet_wrap( ~month) + ggtitle("Rides per Hour Separated by Month")
+```
+
+This plot shows that overall CitiBike traffic for 2016 has been increasing steadily throughout the year, with Jan and Feb being the lowest traffic months and Aug and Sep being the highest traffic months thus far this year.
+
+For every month, the largest amount of traffic (highest rides per hour) occur from 5-6pm, which makes sense as this timeframe is consistent with the "rush hour" traffic associated with the end of the workday. For every month, the second highest peak throughout the day occurs at 8am.
+
+Expectedly, the overall traffic pattern (peaks at 8am and 5-6pm, steady afternoon traffic, and a steep lull in nighttime traffic) is pretty consistent from month to month.
+
+```{r,message=FALSE}
+#Graphing average rides per hour coloured with weekdays
+plot_6 <- ggplot(bikes, aes(x=hour, fill = weekday, label = hour))
+plot_6+geom_bar()+ggtitle("Average Rides per Hour")+labs(x= "Hour of the Day", y= "Amount of Rides")
+
+#Graphing rides per hour as a function of weekday
+plot_uh2 <- ggplot(data = bikes, aes(x=hour, colour = daytime))
+plot_uh2 + geom_bar()+facet_wrap( ~weekday)+ggtitle("Rides per Hour Separated by Weekday")
+```
+
+The above plots further reveal that the overall traffic pattern discussed above arises as the "average" due to the "weekday" data dominating over the "weekend" data. As seen from above, the two-peak traffic pattern is very pronounced for all weekdays. On weekends, a very different traffic pattern emerges. Instead of the two peaks associated with commuting to/from work or school, the traffic pattern
+on Saturdays and Sundays exhibits a parabolic pattern which resembles a normal distribution. On these days, peak traffic occurs from 2-3pm and the traffic asymmetrically decreases at a smaller slope into the evening hours, showing there is more evening traffic than morning traffic. It is also noteworthy that the weekend days show noticeably more nighttime traffic (especially 12-2am) than weekdays.
+
+Further comparing weekends to weekdays while also taking date/month into account, we plot the number of rides per day as a function of both variables.
+
+```{r}
+bydate <- group_by(bikes, date)
+date_summary1 <- summarise(bydate, count = n(), distance = mean(distance, na.rm =  T), weekend = weekend[1])
+plot_3 <- ggplot(date_summary1, aes(x=date, y= count , colour = weekend))
+plot_3+geom_point()+geom_smooth()+ggtitle("Rides per Day")+labs(x = "Date")
+```
+
+Two primary traffic conclusions can be drawn from the above graph.
+
+1. On average, weekdays have more traffic (more rides per day) than weekend days consistently throughout the entire year of 2016 except for one period in late September where average rides per day on weekends exceeded those during the week. This could be due to a weekend event in late Sep (a bike race, for example) that demanded many weekend rides and skewed the normal/average traffic pattern.
+
+2. For every day, both weekdays and weekends, the overall traffic significantly increases over the course of the year. As the year has progressed, the increasing slope reflects an increasing demand for and frequency of daily rentals. In Jan and Feb, the rides per day average below 5,000 rides. This average steadily increases until the average more than doubles to over 10,000 rides per day in Aug and Sep.
+
+###2.2 Examining frequent route patterns
+
+To identify which routes are being most frequently traveled, we first combine both the starting and the ending destination into a new variable.
+
+```{r}
+bikes$start_end <- paste(bikes$start.station.name, bikes$end.station.name, sep = "-->")
+```
+
+We can then determine which of these travel patterns are recurring the most frequently by plotting this new variable we created.
+
+```{r}
+barplot(sort(table(bikes$start_end),decreasing=TRUE)[1:5], main = "Frequencies of Most Recurrent Routes", ylab = "Frequency", las = 1, cex.names = 0.25)
+```
+
+From this plot, we can see that the most frequent route pattern, by far, is the route which both starts and ends at the station at Central Park S & 6 Ave. This proves that users riding around/through Central Park is a highly reliable and recurrent pattern. This route occurs more than 50% more frequently than the next most traveled route. 
+
+###2.3 Assessing potential speed patterns
+
+```{r}
+plot_as <- ggplot(bikes_no.age.na, aes(x = age, y = speed, colour = gender))
+plot_as + geom_smooth()+ggtitle("Average Traveling Speed as a Function of Age")+labs(x = "Age", y="Speed (m/s)")
+```
+
+As we expected, there does appear to be a pattern when looking at speed through the lenses of age and gender. On average, males bicycle at a faster speed than females. Interestingly, this pattern reverses and female riders become faster than males at ages greater than 70. As we expected, average speed does gradually decline as age increases, but we did not expect that speed also declines for young riders below (approximately) 25 years old. Both male and females' average cycling speed peaks at age 25. In general, a peak average speed of about 2.7 m/s occurs for males aged 25-30.
+
+###2.4 Assessing potential distance patterns
+
+This section examines whether there are any discernable patterns between ride distance, time of year, and weekday vs. weekend.
+
+```{r}
+plot_1 <- ggplot(date_summary1, aes(x=date, y= distance, colour = weekend))
+plot_1 +geom_point(aes(size = count), alpha = 1/2)+geom_smooth()+ggtitle("Average Distance per Ride")+labs(x = "Date", y="Distance (m)")
+```
+
+The progressively increasing size of the dots indicates a higher ride frequency later in the year, which further confirms the last conclusion discussed in Section 2.1. The plot shows that, along with ride demand/frequency, average trip distance is also increasing over the course of the year. 
+
+Though the difference may or may not be significant, we can also conclude that average distance per ride is greater on weekdays than on weekends. Throughout (almost) the entire year, the weekday average distance appears to be approximately 50m longer than the corresponding weekend average distance. Similarly to one of our findings in Section 2.1, the exception occurs in late Sep, when the average weekend distance exceeds average weekday distance. This corroborates our previous suspicion that some sort of bike race or other increase in weekend traffic must have occurred.
+
+_______.
+
+###2.5 Assessing potential duration patterns
+
+This section examines whether there are any discernable patterns between ride duration, time of year, and weekday vs. weekend.
+
+```{r}
+date_summary4 <- summarise(bydate, tripduration = mean(tripduration, na.rm = T)/60, count = mean(distance, na.rm =T), colour = weekend[1])
+plot_4 <- ggplot(date_summary4, aes(x=date, y=tripduration, colour = colour))
+plot_4 + geom_point() + geom_smooth() + ggtitle("Average Trip Duration per Ride") + labs(x = "Date", y = "Trip Duration (minutes)")
+```
+
+We can identify the pattern that weekend trip durations are, on average, longer than weekday trip durations. Further, the shaded regions around each line show that there's more variation in the average weekend trip duration; the average weekday trip duration is much more consistent/stable, which makes sense as users are more likely to be on a fixed path instead of meandering/exploring. 
+
+Unlike the increasing patterns of both traffic frequency and trip distance, as seen in Sections 2.1 and 2.4, respectively, average trip duration does not appear to significantly or continuously increase over the course of the year. Like both other variables, there is still a noticeable increase relative to the winter months (Jan and Feb), but then instead of continuing to increase, the trip duration peaks in the late spring/early summer (around May) and then decreases in the transition from summer to fall months.
+
+For weekend trips, this peak average is around 21-22 minutes per trip; for weekday trips, this peak average significantly drops to 16-17 minutes.
+
+##3.0 Examining asymmetric traffic
+
+
+We compare the amount of incoming and leaving bikes per station only for the month September to decrease computing time. The same code would run for the entire period of nine months, but would need way more time without relevant changes to our findings. First we prepare the dataset for September by running a couple of the same commands as in the beginning of the document.
+
+```{r}
+sep <- bikes09
+
+sep$starttime <- as.POSIXct(sep$starttime,format = c("%m/ %d/ %Y %H: %M"))
+sep$stoptime <- as.POSIXct(sep$stoptime,format = c("%m/ %d/ %Y %H: %M"))
+#Creating a seperate "date" column for yearly overview
+sep$date <- as.Date(sep$starttime)
+
+#Creating columns that indicate weekday or weekend
+sep$weekday <- wday(sep$starttime)
+sep$weekday <- as.factor(sep$weekday)
+levels(sep$weekday) <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+sep$weekend <- ifelse(sep$weekday == "Sat" | sep$weekday == "Sun", "Weekend", "Weekday")
+sep$weekend <- as.factor(sep$weekend)
+stations <- filter(sep, weekend == "Weekday")
+```
+
+We analyze the loss and gain of bikes for two different scenarios: weekends and weekdays. The first map shows the former the second map the latter. Stations with an average gain of bikes each day are colured green, the other ones red. The size of the circle indicates the relative amount of bikes being lost or gained. You can gain more specific information about each station by moving the cursor on the corresponding circle.
+
+```{r}
+#Counting the number of rides starting or ending at each station and merging these tables
+bikes.departures <- table(stations$start.station.name)
+bikes.arrivals <- table(stations$end.station.name)
+departure.arrivals <- merge(bikes.departures, bikes.arrivals, by="Var1")
+
+#Since we lost longitude and latitude in the step above, we now create a table with these values for each station
+station.list <- distinct(select (bikes, start.station.name, start.station.latitude, start.station.longitude))
+station.list <- rename(station.list, "Var1" = start.station.name)
+
+#merging geodata and number of rides for each station
+departure.arrivals <- merge(departure.arrivals, station.list, by = "Var1")
+
+#renaming for convenience
+departure.arrivals <- rename(departure.arrivals, "number.dep" = Freq.x, "number.arr" = Freq.y, "start.station.name" = Var1, "latitude" = start.station.latitude, "longitude" = start.station.longitude)
+
+#column "sum" is overall number of arrivals minus overall number of departues for September
+#divided by number of weekdays for this period
+departure.arrivals$sum <- (departure.arrivals$number.arr - departure.arrivals$number.dep)/22
+
+#Creating new dataset only containing top and bottom 20 stations (loss/gain per day)
+map4 <- departure.arrivals[order(departure.arrivals$sum, decreasing = T),]
+map4 <- map4[1:20,]
+map5 <- departure.arrivals[order(departure.arrivals$sum, decreasing = F),]
+map5 <- map5[1:20,]
+map6 <- rbind(map5, map4)
+map6 <- map6[order(map6$sum, decreasing = T),]
+
+leaflet(data = map6) %>% addTiles() %>% addCircleMarkers (radius = ~ abs(sum)/4, color = ~ ifelse(sum > 0, "green", "red"), stroke = FALSE, fillOpacity = 0.5, ~ longitude, ~ latitude, label = ~ paste("Station: ", start.station.name, "," , ifelse(sum > 0, "Average gain per day: ", "Average loss per day: "), round(abs(sum), digits = 2)))
+```
+
+There is no pattern of stations losing or gaining bikes for weekdays as red and green spots are randomly distributed over the map. It is important to notice than some stations experience a significant loss of bikes that should be covered with either bigger capacity or supply from other stations.
+
+Stations which lose most bikes per day on weekdays:
+
+1. `r map6[40,1]` with an average loss of : `r abs(round(map6[40,6], digits =1))`
+
+2. `r map6[39,1]` with an average loss of : `r abs(round(map6[39,6], digits =1))`
+
+3. `r map6[38,1]` with an average loss of : `r abs(round(map6[38,6], digits =1))`
+
+Stations which gain most bikes per day on weekdays:
+
+1. `r map6[1,1]` with an average gain of : `r round(map6[1,6], digits =1)`
+
+2. `r map6[2,1]` with an average gain of : `r round(map6[2,6], digits =1)`
+
+3. `r map6[3,1]` with an average gain of : `r round(map6[3,6], digits =1)`
+
+```{r}
+stations <- filter(bikes, weekend == "Weekend")
+
+#Counting the number of rides starting or ending at each station and merging these tables
+bikes.departures <- table(stations$start.station.name)
+bikes.arrivals <- table(stations$end.station.name)
+departure.arrivals <- merge(bikes.departures, bikes.arrivals, by="Var1")
+
+#Since we lost longitude and latitude in the step above, we now create a table with these values for each station
+station.list <- distinct(select (bikes, start.station.name, start.station.latitude, start.station.longitude))
+station.list <- rename(station.list, "Var1" = start.station.name)
+
+#merging geodata and number of rides for each station
+departure.arrivals <- merge(departure.arrivals, station.list, by = "Var1")
+
+#renaming for convenience
+departure.arrivals <- rename(departure.arrivals, "number.dep" = Freq.x, "number.arr" = Freq.y, "start.station.name" = Var1, "latitude" = start.station.latitude, "longitude" = start.station.longitude)
+
+#column "sum" is overall number of arrivals minus overall number of departues for September
+#divided by number of weekend days for this period
+departure.arrivals$sum <- (departure.arrivals$number.arr - departure.arrivals$number.dep)/8
+
+
+#Creating new dataset only containing top and bottom 20 stations (loss/gain per day)
+map <- departure.arrivals[order(departure.arrivals$sum, decreasing = T),]
+map <- map[1:20,]
+map1 <- departure.arrivals[order(departure.arrivals$sum, decreasing = F),]
+map1 <- map1[1:20,]
+map3 <- rbind(map, map1)
+map3 <- map3[order(map3$sum, decreasing = T),]
+
+leaflet(data = map3) %>% addTiles() %>% addCircleMarkers (radius = ~ abs(sum)/2, color = ~ ifelse(sum > 0, "green", "red"), stroke = FALSE, fillOpacity = 0.5, ~ longitude, ~ latitude, label = ~ paste("Station: ", start.station.name, "," , ifelse(sum > 0, "Avergae gain per day: ", "Average loss per day: "), round(abs(sum), digits = 2)))
+
+```
+
+There seems to be a pattern of rides beginning in the upper part of Manhattan and ending in the lower part when people use citiBike on weekends. Furthermore the stations with the biggest loss and gain have changed from typical commuting locations (train stations, etc. ) to touristic hotspots like Central Park or lower Manhattan.
+
+Stations which lose most bikes per day on weekends:
+
+1. `r map3[40,1]` with an average loss of : `r abs(round(map3[40,6], digits =1))`
+
+2. `r map3[39,1]` with an average loss of : `r abs(round(map3[39,6], digits =1))`
+
+3. `r map3[38,1]` with an average loss of : `r abs(round(map3[38,6], digits =1))`
+
+
+Stations which gain most bikes per day on weekends:
+
+1. `r map3[1,1]` with an average gain of : `r round(map3[1,6], digits =1)`
+
+2. `r map3[2,1]` with an average gain of : `r round(map3[2,6], digits =1)`
+
+3. `r map3[3,1]` with an average gain of : `r round(map3[3,6], digits =1)`
+
+##4.0 Examining the impact of weather
+
+**Client wants to know the impact of weather (temperature, rain, snow, wind) on the CitiBike system.**
+
+###4.1 Importing, incorporating, and cleaning the weather data
+
+```{r,message=FALSE}
+#Reading the weather data
+weather <- read.csv("weather_data.csv")
+
+#Merging the weather data with the bike ride data
+date_summary6 <- summarise(bydate, count = n(), distance = mean(distance, na.rm =  T), tripduration = mean(tripduration, na.rm = T))
+weather$date <- as.Date(as.character(weather$DATE), "%Y%m%d")
+bike_weather <- merge(date_summary6, weather, by.x= "date", by.y = "date")
+bike_weather$avgtemp <- (bike_weather$TMAX+bike_weather$TMIN)/2
+bike_weather$avgtempsq <- bike_weather$avgtemp^2
+bike_weather$TMINsq <- bike_weather$TMIN^2
+bike_weather$TMAXsq <- bike_weather$TMAX^2
+
+#Cleaning the merged data
+bike_weather$weekday <- wday(bike_weather$date)
+bike_weather$weekday <- as.factor(bike_weather$weekday)
+levels(bike_weather$weekday) <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+bike_weather$weekend <- ifelse(bike_weather$weekday == "Sat" | bike_weather$weekday == "Sun", "Weekend", "Weekday")
+bike_weather$weekend <- as.factor(bike_weather$weekend)
+```
+
+###4.2 Visualizing the impact of weather
+
+####4.2.1 Visualizing the impact of temperature
+
+```{r}
+temp_rides <- ggplot(data = bike_weather, aes(x = avgtempsq, y = count))
+temp_rides + geom_point() + geom_smooth() + ggtitle("Number of Rides as a Function of Average Temperature Squared") + xlab("Average Temperature Squared (degrees F^2)")
+
+temp_dist <- ggplot(data = bike_weather, aes(x = avgtempsq, y = distance))
+temp_dist + geom_point() + geom_smooth() + ggtitle("Ride Distance as a Function of Average Temperature Squared") + xlab("Average Temperature Squared (degrees F^2)")
+```
+
+These two graphs show the relationship between temperature and the number of rides and distance riders travelled. The first graph shows temperature squared in relation to number of rides per day and the second displays the temperature squared in relation to the distance riders travel. As we can see, the most and longest rides tend to be taken at moderate temperatures and both variables drop at much lower and much higher temperatures. 
+
+####4.2.1 Visualizing the impact of snow
+
+```{r}
+gsnow_rides <- ggplot(data = bike_weather, aes(x = SNWD, y = count))
+gsnow_rides + geom_point() + ggtitle("Number of Rides as a Function of Snow on Ground") + xlab("Amount of Snow on Ground (in)")
+
+snowfall_rides <- ggplot(data = bike_weather, aes(x = SNOW, y = count))
+snowfall_rides + geom_point() + ggtitle("Number of Rides as a Function of Falling Snow") + xlab("Amount of Falling Snow (in)")
+```
+
+Together, these plots show that ride traffic significantly decreases with the presence of both falling snow and existing snow on the ground. Note that there are only very few days with snow which makes this anlysis less significant than the connection to temperature.
+
+###4.3 Modeling the expected traffic given day and weather conditions
+
+####4.3.1 Constructing a linear regression model
+
+We constructed several linear regression models that aimed at predicting the "count," or the number of rides per day, as a function of several predictor variables. We experimented with all of the following predictor variables: day of the week, weekday vs. weekend, average temperature, precipitation, snowfall, existing snow, and wind. The following code represents the model which best described the data.
+
+```{r}
+bike_model <- lm(count ~ weekday + avgtemp + PRCP + SNWD + SNOW + DATE, data = bike_weather)
+summary(bike_model)
+```
+
+This model indicates that date, day of the week (excluding Sunday), average temperature, precipitation, snowfall, and existing snow on the ground are all variables which highly significantly impact the number of rides per day.
+
+Based on the size of the coefficients of these significant predictor variables, the most important of these variables is the day of the week. The largest impact on ride count (the highest coefficient) comes from the day of the week being Thursday, followed by Friday, followed by Wednesday.
+
+In regards to the weather-related predictor variables, the important of these is precipitation. The coefficient of precipitation has the largest magnitude; therefore, it has the largest negative impact on ride count among any of the other weather-related variables in the model.
+
+The adjusted R squared value indicates that nearly 86% of the variation in ride count can be explained by the variation in date, day of the week (excluding Sunday), average temperature, precipitation, snowfall, and existing snow on the ground.
+
+####4.3.2 Using the linear regression model
+
+We ran the above model (Section 4.3.1) to estimate what the number of CitiBike rides would be if the conditions were as follows:
+
+Day = Wednesday
+Date = October 31, 2018 (today's date)
+Average temp = 51 degrees F
+Precipitation = 0.5 in
+Snowfall = 0 in
+Existing snow on ground = 0 in
+
+```{r}
+testvalue <- data.frame(weekday = "Wed", avgtemp = 51, PRCP = 0.5, SNWD = 0, SNOW = 0, DATE = 20181031)
+p <- predict(bike_model, newdata = testvalue, interval = "confidence")
+p
+```
+
+Based on the conditions assumed and specified above and based on our linear model, we would expect NYC's CitiBike system to see between `r p[1]` and `r p[3]` rides today (with a confidence level of 95%).
+
+####4.3.3 Constructing a classification model
+
+We use a KNN algorithm, which is a classification algorithm, in order to predict whether any given day will be classified as a high traffic day (count is greater than or equal to 7,500) or a low traffic day (count is less than 7,500). The cut-off determination was selected as 7,500 based on that value being the median of the count data.
+
+Before running the model, we first complete all of the following preparations, including normalizing the variables and differentiating between training and testing data.
+
+```{r}
+#Creating normalization function
+normalize <- function(x){
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+#Preparing new dataset
+bike_weather_new <- bike_weather
+bike_weather_new$AWND <- NULL
+bike_weather_new$STATION_NAME <- NULL
+bike_weather_new$DATE <- NULL
+bike_weather_new <- bike_weather_new[-1]
+bike_weather_new <- bike_weather_new[-2]
+bike_weather_new <- bike_weather_new[-2]
+bike_weather_new <- bike_weather_new[-2]
+bike_weather_new$count <- ifelse(bike_weather_new$count<=7500, 0, 1)
+bike_weather_new$weekday <- as.integer(bike_weather_new$weekday)
+bike_weather_new$weekend <- as.integer(bike_weather_new$weekend)
+
+#Normalizing the variables
+bike_weather_n <- as.data.frame(lapply(bike_weather_new[2:9], normalize))
+
+#Separating train and test data
+train_sample <- sample(seq_len(nrow(bike_weather_new)), size = 189)
+bike_weather_n_train <- bike_weather_n[train_sample, ]
+bike_weather_n_test <- bike_weather_n[-train_sample, ]
+bike_weather_n_train_labels <- bike_weather_new[train_sample,1]
+bike_weather_n_test_labels <- bike_weather_new[-train_sample,1]
+```
+
+We then ran the KNN model function:
+
+```{r}
+# k = sqrt(train size) = sqrt(189) = 13
+bike_weather_n_pred <- knn(train = bike_weather_n_train, test = bike_weather_n_test, cl = bike_weather_n_train_labels, k=13)
+```
+
+####4.3.4 Testing the classification model
+
+The following commands test the accuracy of how well our classification model (Section 4.3.3) correctly classifies a given day into high or low traffic.
+
+```{r}
+c <- CrossTable(x = bike_weather_n_test_labels, y = bike_weather_n_pred, prop.chisq = FALSE)
+```
+
+We found that our model successfully predicts high vs. low traffic with an accuracy of `r round(((c$t[1]+c$t[4])/(c$t[1]+c$t[2]+c$t[3]+c$t[4]))*100, digits = 2)`% and an error rate of `r round((1-(c$t[1]+c$t[4])/(c$t[1]+c$t[2]+c$t[3]+c$t[4]))*100, digits =2)`% within one of the samples we generated.
